@@ -22,8 +22,21 @@ $cred = New-Object System.Management.Automation.PSCredential($vars["SW_MACHINE_S
 $session = New-SSHSession -ComputerName $vars["SW_MACHINE_HOST"] -Credential $cred -AcceptKey -Force -ConnectionTimeout 10
 
 try {
-  $escapedArgs = $NpmArgs | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }
-  $command = 'cmd /c cd /d C:\Hawley\bowlus-hawley && "C:\Program Files\nodejs\npm.cmd" ' + ($escapedArgs -join " ")
+  $argsJson = $NpmArgs | ConvertTo-Json -Compress
+  $argsB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($argsJson))
+  $remoteScript = @'
+$ErrorActionPreference = "Stop"
+$npmArgsJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("__ARGS_B64__"))
+$npmArgs = @($npmArgsJson | ConvertFrom-Json)
+Push-Location "C:\Hawley\bowlus-hawley"
+& "C:\Program Files\nodejs\npm.cmd" @npmArgs
+$exitCode = $LASTEXITCODE
+Pop-Location
+exit $exitCode
+'@
+  $remoteScript = $remoteScript.Replace("__ARGS_B64__", $argsB64)
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($remoteScript))
+  $command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
   $result = Invoke-SSHCommand -SessionId $session.SessionId -Command $command -TimeOut 900
   $result.Output
   if ($result.Error) {

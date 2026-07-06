@@ -22,7 +22,7 @@ $session = New-SSHSession -ComputerName $vars["SW_MACHINE_HOST"] -Credential $cr
 try {
 $remoteScript = @'
 $ErrorActionPreference = "Stop"
-$repoParent = "C:\Users\prode\Bowlus Dropbox\Production Engineering\Engineering\Jacob Working\Projects"
+$repoParent = "C:\Hawley"
 $repoPath = Join-Path $repoParent "bowlus-hawley"
 $git = "C:\Program Files\Git\cmd\git.exe"
 $npm = "C:\Program Files\nodejs\npm.cmd"

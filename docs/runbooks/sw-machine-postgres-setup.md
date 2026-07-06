@@ -34,6 +34,12 @@ The script downloads the official EDB Windows binary zip, initializes the
 cluster, registers `HawleyPostgres17`, and creates the first Hawley roles and
 database.
 
+The SW_Machine service checkout should live outside Dropbox at:
+
+```text
+C:\Hawley\bowlus-hawley
+```
+
 ## Bootstrap Database
 
 Create roles:

@@ -20,32 +20,50 @@ $cred = New-Object System.Management.Automation.PSCredential($vars["SW_MACHINE_S
 $session = New-SSHSession -ComputerName $vars["SW_MACHINE_HOST"] -Credential $cred -AcceptKey -Force -ConnectionTimeout 10
 
 try {
-  $remoteScript = @'
+$remoteScript = @'
 $ErrorActionPreference = "Stop"
 $repoParent = "C:\Users\prode\Bowlus Dropbox\Production Engineering\Engineering\Jacob Working\Projects"
 $repoPath = Join-Path $repoParent "bowlus-hawley"
 $git = "C:\Program Files\Git\cmd\git.exe"
 $npm = "C:\Program Files\nodejs\npm.cmd"
 
+function Invoke-Native {
+  param(
+    [string]$FilePath,
+    [string[]]$Arguments
+  )
+  & $FilePath @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "$FilePath failed with exit code $LASTEXITCODE"
+  }
+}
+
 New-Item -ItemType Directory -Force -Path $repoParent | Out-Null
 
+if ((Test-Path -LiteralPath $repoPath) -and !(Test-Path -LiteralPath (Join-Path $repoPath ".git"))) {
+  if ((Split-Path -Leaf $repoPath) -ne "bowlus-hawley") {
+    throw "Refusing to remove unexpected repo path: $repoPath"
+  }
+  Remove-Item -LiteralPath $repoPath -Recurse -Force
+}
+
 if (!(Test-Path -LiteralPath $repoPath)) {
-  & $git clone https://github.com/jacobrhodes20-dev/jacobrhodes20-dev-bowlus-hawley.git $repoPath
+  Invoke-Native $git @("clone", "https://github.com/jacobrhodes20-dev/jacobrhodes20-dev-bowlus-hawley.git", $repoPath)
 } else {
   Push-Location $repoPath
-  & $git fetch origin
-  & $git checkout main
-  & $git pull --ff-only origin main
+  Invoke-Native $git @("fetch", "origin")
+  Invoke-Native $git @("checkout", "main")
+  Invoke-Native $git @("pull", "--ff-only", "origin", "main")
   Pop-Location
 }
 
 Copy-Item -LiteralPath "C:\Users\prode\.hawley\hawley-db.env" -Destination (Join-Path $repoPath ".env") -Force
 
 Push-Location $repoPath
-& $npm install
-& $npm run pg:health
-& $npm run pg:migrate
-& $git status --short --branch
+Invoke-Native $npm @("install")
+Invoke-Native $npm @("run", "pg:health")
+Invoke-Native $npm @("run", "pg:migrate")
+Invoke-Native $git @("status", "--short", "--branch")
 Pop-Location
 '@
 

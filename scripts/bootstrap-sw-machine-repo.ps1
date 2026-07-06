@@ -67,7 +67,10 @@ if (!(Test-Path -LiteralPath $repoPath)) {
   Pop-Location
 }
 
-Copy-Item -LiteralPath "C:\Users\prode\.hawley\hawley-db.env" -Destination (Join-Path $repoPath ".env") -Force
+$repoEnvPath = Join-Path $repoPath ".env"
+if (!(Test-Path -LiteralPath $repoEnvPath)) {
+  Copy-Item -LiteralPath "C:\Users\prode\.hawley\hawley-db.env" -Destination $repoEnvPath -Force
+}
 
 Push-Location $repoPath
 Invoke-Native $npm @("install")

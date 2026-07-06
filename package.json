@@ -7,10 +7,10 @@
   "scripts": {
     "pg:health": "node ./apps/postgres-sync/src/health.js",
     "pg:migrate": "node ./apps/postgres-sync/src/migrate.js",
-    "pg:pull:airtable": "node ./apps/postgres-sync/src/not-implemented.js pg:pull:airtable",
+    "pg:pull:airtable": "node ./apps/postgres-sync/src/pull-airtable.js",
     "pg:pull:asana": "node ./apps/postgres-sync/src/not-implemented.js pg:pull:asana",
-    "pg:normalize": "node ./apps/postgres-sync/src/not-implemented.js pg:normalize",
-    "pg:sync:dry": "node ./apps/postgres-sync/src/not-implemented.js pg:sync:dry"
+    "pg:normalize": "node ./apps/postgres-sync/src/normalize-airtable.js",
+    "pg:sync:dry": "npm run pg:pull:airtable && npm run pg:normalize"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

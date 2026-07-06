@@ -77,3 +77,27 @@ The first importer follows Rev1's practical model and pulls top-level project
 tasks plus first-level subtasks by default. Increase `HAWLEY_ASANA_SUBTASK_DEPTH`
 or pass `--subtask-depth N` if nested subtask depth becomes operationally
 important.
+
+## First Import Baseline
+
+First SW_Machine full import run: 2026-07-06.
+
+Source scope:
+
+- `Fabrication - 2026`: 11 projects
+- `VINs - 2026`: 19 projects
+
+Imported counts:
+
+- `raw.asana_portfolios`: 2
+- `raw.asana_portfolio_projects`: 30
+- `raw.asana_projects`: 30
+- `raw.asana_tasks`: 10,829
+- `raw.asana_task_project_memberships`: 11,110
+
+Run summary:
+
+- project task/subtask rows fetched: 10,966
+- distinct Asana task GIDs: 10,829
+- source records read: 10,998
+- local Postgres rows inserted/updated during run: 22,292

@@ -64,7 +64,7 @@ async function main() {
     `);
 
     console.log(JSON.stringify({
-      latestAirtableRun: run.rows[0] || null,
+      latestImportRun: run.rows[0] || null,
       counts,
       taskInstanceFieldCount: fieldSummary.rows[0]?.distinct_task_instance_field_count || 0,
       taskInstanceSchemaFieldCount: fieldSummary.rows[0]?.task_instance_schema_field_count || 0,

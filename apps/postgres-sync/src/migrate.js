@@ -8,6 +8,7 @@ const { Client } = pg;
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..", "..", "..");
 const migrationsDir = path.join(repoRoot, "db", "migrations");
+const viewsDir = path.join(repoRoot, "db", "views");
 
 async function ensureMigrationTable(client) {
   await client.query(`
@@ -45,6 +46,16 @@ async function main() {
         "insert into sync.schema_migrations (filename) values ($1)",
         [file]
       );
+    }
+
+    const viewFiles = (await fs.readdir(viewsDir))
+      .filter(file => file.endsWith(".sql"))
+      .sort();
+
+    for (const file of viewFiles) {
+      const sql = await fs.readFile(path.join(viewsDir, file), "utf8");
+      console.log(`Applying view ${file}`);
+      await client.query(sql);
     }
 
     await client.query("commit");

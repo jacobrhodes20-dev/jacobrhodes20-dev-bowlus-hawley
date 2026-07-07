@@ -29,11 +29,10 @@ That view enriches `reporting.daily_worker_assignments` with:
 - inferred work area from the operational capability map
 - source sync timestamp
 
-Manager mode merges active `Work Force` rows from
-`reporting.work_force_capability_levels` with the dated assignment rows. This
-matches the current Daily Worker App behavior: the root page shows the active
-roster even when only one worker has tasks with `Assigned On` equal to the
-selected date.
+Manager mode uses active records directly from Airtable `Work Force`, mirrored
+in `raw.airtable_work_force`, as the strict employee roster. Dated assignment
+rows are attached only to those Work Force workers. This keeps old assignment
+history or capability-map rows from adding stale people to the employee rail.
 
 The browser assets in `apps/hawley-worker-page/public` are intentionally copied
 from the current Shop Ops `apps/daily-worker-app` UI so the pilot looks and
@@ -45,6 +44,19 @@ Apply database migrations/views first:
 
 ```powershell
 npm run pg:migrate
+```
+
+Refresh the read model after Airtable changes:
+
+```powershell
+npm run pg:pull:airtable
+npm run pg:normalize
+```
+
+Refresh Asana completion/permalink context:
+
+```powershell
+npm run pg:pull:asana
 ```
 
 Start the pilot:
@@ -97,3 +109,10 @@ PGUSER
 PGPASSWORD
 DATABASE_URL
 ```
+
+## Blank Task Triage
+
+If the employee list appears but workers are blank, first check whether Hawley's
+Airtable mirror is stale. The worker page reads `Assigned On` from mirrored
+`Task Instances Rev1`, so a fresh assignment in Airtable will not show until
+`pg:pull:airtable` and `pg:normalize` have run.

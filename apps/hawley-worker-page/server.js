@@ -253,22 +253,21 @@ function buildWorkers(rows) {
 }
 
 function mergeConfiguredWorkers(workers, configuredRows) {
-  const byId = new Map(workers.map(worker => [worker.id, { ...worker }]));
+  const assignedById = new Map(workers.map(worker => [worker.id, { ...worker }]));
+  const byId = new Map();
 
   for (const row of configuredRows) {
     const configured = emptyWorkerFromRow(row);
     if (!configured.id || configured.id === "worker-unknown") continue;
 
-    if (!byId.has(configured.id)) {
-      byId.set(configured.id, configured);
-      continue;
-    }
+    const assigned = assignedById.get(configured.id);
+    const worker = assigned ? { ...assigned } : configured;
 
-    const worker = byId.get(configured.id);
     worker.name = worker.name || configured.name;
     worker.email = worker.email || configured.email;
     worker.phase = worker.phase || configured.phase;
     worker.targetHours = configured.targetHours || worker.targetHours;
+    byId.set(configured.id, worker);
   }
 
   return Array.from(byId.values()).sort((a, b) => {
@@ -419,28 +418,19 @@ async function workerAssignments(date) {
 
 async function configuredWorkers() {
   const result = await pool.query(`
-    with ranked as (
-      select
-        worker_name,
-        worker_email,
-        hours_per_day,
-        home_section_column,
-        work_area_name,
-        row_number() over (
-          partition by lower(coalesce(worker_email, worker_name, ''))
-          order by
-            (home_section_column is null),
-            skill_level desc nulls last,
-            work_area_name nulls last
-        ) as rank_number
-      from reporting.work_force_capability_levels
-      where actively_employed
-        and nullif(coalesce(worker_email, worker_name, ''), '') is not null
-    )
-    select worker_name, worker_email, hours_per_day, home_section_column, work_area_name
-    from ranked
-    where rank_number = 1
-    order by worker_name nulls last, worker_email nulls last
+    select
+      nullif(fields_json->>'Name', '') as worker_name,
+      nullif(fields_json->>'Assignee', '') as worker_email,
+      case
+        when nullif(regexp_replace(coalesce(fields_json->>'Hours Per Day', ''), '[^0-9.\\-]+', '', 'g'), '') is null then null
+        else nullif(regexp_replace(coalesce(fields_json->>'Hours Per Day', ''), '[^0-9.\\-]+', '', 'g'), '')::numeric
+      end as hours_per_day,
+      ops.jsonb_display_text(fields_json->'Home Section/Column') as home_section_column,
+      null::text as work_area_name
+    from raw.airtable_work_force
+    where lower(coalesce(fields_json->>'Actively Employed', 'false')) in ('true', '1', 'yes')
+      and nullif(coalesce(fields_json->>'Assignee', fields_json->>'Name', ''), '') is not null
+    order by fields_json->>'Name' nulls last, fields_json->>'Assignee' nulls last
   `);
 
   return result.rows;
@@ -536,7 +526,12 @@ async function healthPayload() {
       select
         (select count(*)::int from reporting.hawley_worker_page_assignments) as assignment_rows,
         (select count(distinct worker_email)::int from reporting.hawley_worker_page_assignments where worker_email is not null) as assigned_worker_count,
-        (select count(distinct worker_email)::int from reporting.work_force_capability_levels where actively_employed and worker_email is not null) as worker_count
+        (
+          select count(*)::int
+          from raw.airtable_work_force
+          where lower(coalesce(fields_json->>'Actively Employed', 'false')) in ('true', '1', 'yes')
+            and nullif(coalesce(fields_json->>'Assignee', fields_json->>'Name', ''), '') is not null
+        ) as worker_count
     `),
     latestImportRuns()
   ]);

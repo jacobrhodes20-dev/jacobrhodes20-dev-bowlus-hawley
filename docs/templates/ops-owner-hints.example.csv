@@ -1,0 +1,2 @@
+work_area_key,owner_person_name,owner_person_email,owner_role,confidence_label,source_label,notes,active
+cnc,Example Person,,practical_anchor,manual,local_hawley_seed,Replace with local shop routing knowledge,true

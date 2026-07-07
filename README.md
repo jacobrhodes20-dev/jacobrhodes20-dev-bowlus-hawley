@@ -62,6 +62,11 @@ from Asana and mirrors portfolios, portfolio-project membership, projects,
 tasks, subtasks, custom fields, and task project/section memberships into the
 local Postgres `raw` schema.
 
+Hawley's operational capability map lives in the `ops` schema and reporting
+views. It combines Airtable `Work Force` skill levels, observed Rev1/Asana task
+assignment history, and local-only owner hints for scheduling/routing support.
+See `docs/runbooks/operational-capability-map.md`.
+
 ## Secret Rules
 
 Do not commit:

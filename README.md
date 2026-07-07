@@ -67,6 +67,13 @@ views. It combines Airtable `Work Force` skill levels, observed Rev1/Asana task
 assignment history, and local-only owner hints for scheduling/routing support.
 See `docs/runbooks/operational-capability-map.md`.
 
+The Hawley worker-page pilot runs beside the current Daily Worker App and reads
+Postgres only:
+
+```powershell
+npm run worker:hawley
+```
+
 ## Secret Rules
 
 Do not commit:

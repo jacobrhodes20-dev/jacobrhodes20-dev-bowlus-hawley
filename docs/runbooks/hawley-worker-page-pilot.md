@@ -1,20 +1,31 @@
 # Hawley Worker Page Pilot
 
 The Hawley worker page is a read-only pilot clone of the Daily Worker App. It
-uses Hawley/Postgres instead of live Airtable and Asana tracker reads.
+uses Hawley/Postgres instead of live Airtable and live Asana reads.
 
 ## Boundary
 
 This pilot does not start timers, complete tasks, create Asana time tracking
-entries, or refresh Daily Assignment Tracker. It reads local Hawley reporting
-views only.
+entries, or rebuild Daily Assignment Tracker. It reads local Hawley tables and
+reporting views only.
 
 Timer and completion writes should be added only after Hawley has a first-class
 worker session ledger and an approved Asana push path.
 
 ## Read Model
 
-The app reads:
+The app prefers mirrored Daily Assignment Tracker snapshots from:
+
+```sql
+raw.asana_tasks
+```
+
+where `project_gid` is the Daily Assignment Tracker project
+`1214157321063250`. This mirrors the current worker page's snapshot behavior,
+including tasks whose Airtable `Assigned On` value is blank but whose DAT
+snapshot includes them for the selected date.
+
+If no DAT snapshot exists for the selected date, the app falls back to:
 
 ```sql
 reporting.hawley_worker_page_assignments
@@ -53,11 +64,16 @@ npm run pg:pull:airtable
 npm run pg:normalize
 ```
 
-Refresh Asana completion/permalink context:
+Refresh Asana completion/permalink context and DAT snapshots:
 
 ```powershell
 npm run pg:pull:asana
+npm run pg:pull:daily-tracker
 ```
+
+`pg:pull:daily-tracker` also refreshes source tasks referenced by the DAT
+snapshot payload so worker-page completion status can match the current app
+without a full portfolio pull.
 
 Start the pilot:
 
@@ -97,6 +113,7 @@ The `POST` endpoints intentionally return read-only pilot errors.
 ```text
 HAWLEY_WORKER_HOST=127.0.0.1
 HAWLEY_WORKER_PORT=5273
+HAWLEY_DAILY_TRACKER_PROJECT_GID=1214157321063250
 ```
 
 The app uses the same Postgres environment variables as the Hawley sync scripts:
@@ -113,6 +130,12 @@ DATABASE_URL
 ## Blank Task Triage
 
 If the employee list appears but workers are blank, first check whether Hawley's
-Airtable mirror is stale. The worker page reads `Assigned On` from mirrored
-`Task Instances Rev1`, so a fresh assignment in Airtable will not show until
-`pg:pull:airtable` and `pg:normalize` have run.
+DAT mirror has been refreshed:
+
+```powershell
+npm run pg:pull:daily-tracker
+```
+
+If the DAT project has no snapshot for the selected date, the page falls back to
+mirrored `Task Instances Rev1`. In that fallback mode, a fresh assignment in
+Airtable will not show until `pg:pull:airtable` and `pg:normalize` have run.

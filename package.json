@@ -9,6 +9,7 @@
     "pg:migrate": "node ./apps/postgres-sync/src/migrate.js",
     "pg:pull:airtable": "node ./apps/postgres-sync/src/pull-airtable.js",
     "pg:pull:asana": "node ./apps/postgres-sync/src/pull-asana.js",
+    "pg:pull:daily-tracker": "node ./apps/postgres-sync/src/pull-daily-tracker.js",
     "pg:normalize": "node ./apps/postgres-sync/src/normalize-airtable.js",
     "pg:load:ops-hints": "node ./apps/postgres-sync/src/load-ops-owner-hints.js",
     "pg:sync:dry": "npm run pg:pull:airtable && npm run pg:normalize",

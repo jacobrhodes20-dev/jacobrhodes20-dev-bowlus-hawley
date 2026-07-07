@@ -13,6 +13,7 @@ const staticDir = path.join(appDir, "public");
 
 const HOST = process.env.HAWLEY_WORKER_HOST || "127.0.0.1";
 const PORT = Number(process.env.HAWLEY_WORKER_PORT || 5273);
+const DAILY_TRACKER_PROJECT_ID = process.env.HAWLEY_DAILY_TRACKER_PROJECT_GID || "1214157321063250";
 
 const pool = new Pool(getDatabaseConfig());
 
@@ -128,8 +129,41 @@ function cleanDisplayList(value) {
     .join(", ");
 }
 
+function slugify(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function formatCycleName(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^c\d+$/i.test(text)) return `C${text.replace(/^c/i, "")}`;
+  if (/^\d+$/.test(text)) return `C${text}`;
+  return text;
+}
+
+function formatPhaseName(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^phase\s+[a-z]$/i.test(text)) return `Phase ${text.slice(-1).toUpperCase()}`;
+  if (/^[a-z]$/i.test(text)) return `Phase ${text.toUpperCase()}`;
+  return text;
+}
+
+function formatPhaseList(value) {
+  return cleanDisplayList(value)
+    .split(",")
+    .map(item => formatPhaseName(item))
+    .filter(Boolean)
+    .join(", ");
+}
+
 function taskFromRow(row) {
   const estimatedHours = Number(row.estimated_hours || 0);
+  const phase = formatPhaseName(row.phase_name || row.inferred_work_area_name);
+  const workArea = formatPhaseName(row.inferred_work_area_name || row.phase_name || row.section_column || "Unspecified");
   return {
     id: taskId(row),
     taskInstanceId: row.task_instance_id,
@@ -138,10 +172,10 @@ function taskFromRow(row) {
     title: row.task_name || "(Untitled task)",
     completed: Boolean(row.completed),
     status: row.completed ? "Done" : "Open",
-    phase: row.phase_name || row.inferred_work_area_name || "",
-    workArea: row.inferred_work_area_name || row.phase_name || row.section_column || "Unspecified",
+    phase,
+    workArea,
     workAreaKey: row.inferred_work_area_key || "",
-    cycle: row.cycle_name || "",
+    cycle: formatCycleName(row.cycle_name),
     vin: row.vin || "",
     assignedHours: round(estimatedHours),
     targetHours: round(estimatedHours),
@@ -167,7 +201,7 @@ function emptyWorkerFromRow(row) {
     id,
     name: row.worker_name || row.worker_email || "Unassigned",
     email: row.worker_email || "",
-    phase: cleanDisplayList(row.home_section_column || row.work_area_name),
+    phase: formatPhaseList(row.home_section_column || row.work_area_name),
     cycle: "",
     workBlock: "",
     trackerStatus: "No Work",
@@ -199,9 +233,9 @@ function buildWorkers(rows) {
         id,
         name: row.worker_name || row.worker_email || "Unassigned",
         email: row.worker_email || "",
-        phase: row.inferred_work_area_name || row.phase_name || "",
-        cycle: row.cycle_name || "",
-        workBlock: row.inferred_work_area_name || row.phase_name || "",
+        phase: formatPhaseName(row.inferred_work_area_name || row.phase_name),
+        cycle: formatCycleName(row.cycle_name),
+        workBlock: formatPhaseName(row.inferred_work_area_name || row.phase_name),
         trackerStatus: "No Work",
         trackerUrl: "",
         targetHours: 7.5,
@@ -329,16 +363,514 @@ function buildManagerSignals(workers) {
   };
 }
 
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function fieldsByName(fields) {
+  return asArray(fields).reduce((result, field) => {
+    if (field?.name) result[field.name] = field;
+    return result;
+  }, {});
+}
+
+function textValue(field) {
+  if (!field) return "";
+  if (field.enum_value?.name) return field.enum_value.name;
+  if (field.text_value !== undefined && field.text_value !== null) return field.text_value;
+  return field.display_value || "";
+}
+
+function numberValue(field) {
+  if (!field || field.number_value === null || field.number_value === undefined) return 0;
+  return Number(field.number_value);
+}
+
+function dateValue(field) {
+  if (!field) return "";
+  if (field.date_value?.date) return field.date_value.date;
+  return field.display_value ? String(field.display_value).slice(0, 10) : "";
+}
+
+function displayPhaseLabel(phaseLabel, phaseBucket) {
+  const explicit = String(phaseLabel || "").trim();
+  const bucket = String(phaseBucket || "").trim();
+  if (explicit && !/^rec[A-Za-z0-9]{14,}$/i.test(explicit)) return formatPhaseName(explicit);
+
+  const bucketPhase = bucket
+    .split("-")
+    .slice(1)
+    .join("-")
+    .trim();
+  return formatPhaseName(bucketPhase) || explicit;
+}
+
+function sourceTaskUrl(taskId) {
+  return `https://app.asana.com/1/829365006370166/task/${taskId}`;
+}
+
+function taskIdFromUrl(value) {
+  const match = String(value || "").match(/task\/(\d+)/);
+  return match ? match[1] : "";
+}
+
+function parseSnapshotPayload(value) {
+  const text = String(value || "").trim();
+  if (!text.startsWith("[")) return [];
+
+  try {
+    return JSON.parse(text).map(item => ({
+      id: item.gid,
+      title: item.taskName || `Source task ${item.gid}`,
+      assignedHours: Number(item.estimatedHours || 0),
+      targetHours: Number(item.estimatedHours || 0),
+      cycle: Array.isArray(item.taskCycleLabels) ? item.taskCycleLabels.map(formatCycleName).join(", ") : "",
+      phase: displayPhaseLabel(item.phaseLabel, item.phaseBucketKey),
+      phaseBucket: item.phaseBucketKey || "",
+      order: item.taskOrder,
+      vin: item.vin,
+      sourceUrl: item.gid ? sourceTaskUrl(item.gid) : "",
+      trackerUrl: "",
+      completed: false
+    }));
+  } catch (error) {
+    return [];
+  }
+}
+
+function parseAssignedTaskBreakdown(notes) {
+  const lines = String(notes || "").split(/\r?\n/);
+  const start = lines.findIndex(line => line.trim() === "Assigned Task Breakdown");
+  if (start === -1) return [];
+
+  const rows = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    if (/^[A-Z][A-Za-z ]+$/.test(line) && !line.startsWith("- ")) break;
+    if (!line.startsWith("- [")) continue;
+
+    const columns = line.replace(/^- /, "").split(" | ");
+    const completed = columns[0].includes("[x]");
+    const hasOutlier = columns.length >= 8;
+    const cycleIndex = hasOutlier ? 2 : 1;
+    const hoursIndex = hasOutlier ? 3 : 2;
+    const targetIndex = hasOutlier ? 4 : 3;
+    const titleIndex = hasOutlier ? 5 : 4;
+    const trackerIndex = hasOutlier ? 6 : 5;
+    const sourceIndex = hasOutlier ? 7 : 6;
+    const sourceUrl = columns[sourceIndex] || columns[trackerIndex] || "";
+
+    rows.push({
+      id: taskIdFromUrl(sourceUrl) || taskIdFromUrl(columns[trackerIndex]) || slugify(columns[titleIndex] || ""),
+      completed,
+      outlierFlag: hasOutlier ? columns[1] : "",
+      cycle: formatCycleName(columns[cycleIndex] || ""),
+      assignedHours: Number(String(columns[hoursIndex] || 0).replace(/[^0-9.\-]+/g, "")),
+      targetHours: Number(String(columns[targetIndex] || 0).replace(/[^0-9.\-]+/g, "")),
+      title: columns[titleIndex] || "Untitled task",
+      trackerUrl: publicLink(columns[trackerIndex]),
+      sourceUrl: publicLink(sourceUrl)
+    });
+  }
+
+  return rows;
+}
+
+function chooseTaskTitle(noteTask, payloadTask) {
+  const noteTitle = String(noteTask?.title || "").trim();
+  const payloadTitle = String(payloadTask?.title || "").trim();
+  const noteIsFallback = /^Source task \d+$/i.test(noteTitle);
+  const payloadIsFallback = /^Source task \d+$/i.test(payloadTitle);
+
+  if (noteTitle && !noteIsFallback) return noteTitle;
+  if (payloadTitle && !payloadIsFallback) return payloadTitle;
+  return noteTitle || payloadTitle || "Untitled task";
+}
+
+function mergeTaskRows(noteTasks, payloadTasks) {
+  if (!noteTasks.length) return payloadTasks;
+  const payloadById = new Map(payloadTasks.map(task => [task.id, task]));
+
+  return noteTasks.map(task => ({
+    ...(payloadById.get(task.id) || {}),
+    ...task,
+    title: chooseTaskTitle(task, payloadById.get(task.id))
+  }));
+}
+
+function normalizeTrackerSnapshot(row) {
+  const raw = row.raw_json || {};
+  const fields = fieldsByName(asArray(row.custom_fields_json).length ? row.custom_fields_json : raw.custom_fields);
+  const sectionNames = asArray(raw.memberships)
+    .map(membership => membership.section?.name)
+    .filter(Boolean);
+
+  return {
+    gid: row.gid,
+    name: row.name,
+    notes: raw.notes || "",
+    dueOn: row.due_on || "",
+    completed: Boolean(row.completed),
+    url: publicLink(row.permalink_url),
+    sectionNames,
+    archivedSection: sectionNames.some(name => /\barchive\b/i.test(name)),
+    trackerDate: dateValue(fields["Tracker Date"]) || row.due_on || "",
+    trackerType: textValue(fields["Tracker Type"]) || textValue(fields["Tracker Model"]),
+    trackerStatus: textValue(fields["Tracker Status"]),
+    cycle: formatCycleName(textValue(fields["Cycle Label"])),
+    primaryWorker: textValue(fields["Primary Worker"]),
+    workerEmail: textValue(fields["Worker Email"]),
+    workerCycleKey: textValue(fields["Worker Cycle Key"]),
+    phase: formatPhaseName(textValue(fields["Primary Phase"])),
+    phaseBucket: textValue(fields["Phase Bucket"]),
+    workBlock: formatPhaseName(textValue(fields["Work Block Label"])),
+    snapshotPayload: textValue(fields["Snapshot Payload"]),
+    assignedHours: numberValue(fields["Assigned Hours"]),
+    completedHours: numberValue(fields["Completed Assigned Hours"]),
+    actualHours: numberValue(fields["Actual Hours Logged"]),
+    remainingHours: numberValue(fields["Remaining Assigned Hours"]),
+    taskCount: numberValue(fields["Snapshot Task Count"]) || numberValue(fields["Task Link Count"]),
+    completedTaskCount: numberValue(fields["Completed Task Count"]),
+    targetHours: numberValue(fields["Target Hours"]),
+    capacityHours: numberValue(fields["Capacity Hours"]),
+    capacityDeltaHours: numberValue(fields["Capacity Delta Hours"]),
+    completionPercent: numberValue(fields["Completion %"]),
+    loadCapacityPercent: numberValue(fields["Load / Capacity %"]),
+    taskOrderRange: textValue(fields["Task Order Range"]),
+    vinRange: textValue(fields["VIN Range"]),
+    supportWorkers: textValue(fields["Support Workers"]),
+    syncedAt: row.synced_at || null
+  };
+}
+
+function latestActiveTrackerDate(snapshots) {
+  const dates = snapshots
+    .map(snapshot => snapshot.trackerDate)
+    .filter(value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")));
+  return dates.length ? dates.sort().at(-1) : "";
+}
+
+function snapshotWorkerId(snapshot) {
+  const email = snapshot.workerEmail && snapshot.workerEmail !== "Unmapped" ? snapshot.workerEmail : "";
+  if (email) return slugifyWorker({ workerEmail: email, workerName: snapshot.primaryWorker });
+  return slugify(snapshot.workerCycleKey || snapshot.primaryWorker || snapshot.gid);
+}
+
+function snapshotToWorker(snapshot) {
+  const payloadTasks = parseSnapshotPayload(snapshot.snapshotPayload);
+  const noteTasks = parseAssignedTaskBreakdown(snapshot.notes);
+  const tasks = mergeTaskRows(noteTasks, payloadTasks);
+  const email = snapshot.workerEmail && snapshot.workerEmail !== "Unmapped" ? snapshot.workerEmail : "";
+
+  return {
+    id: snapshotWorkerId(snapshot),
+    name: snapshot.primaryWorker || workerNameFromTitle(snapshot.name),
+    email,
+    cycle: snapshot.cycle,
+    phase: snapshot.phase,
+    phaseBucket: snapshot.phaseBucket,
+    phases: snapshot.phase ? [snapshot.phase] : [],
+    workBlock: snapshot.workBlock,
+    workBlocks: snapshot.workBlock ? [snapshot.workBlock] : [],
+    trackerStatus: snapshot.trackerStatus,
+    trackerUrl: snapshot.url,
+    trackerUrls: snapshot.url ? [snapshot.url] : [],
+    assignedHours: snapshot.assignedHours,
+    completedHours: snapshot.completedHours,
+    remainingHours: snapshot.remainingHours,
+    actualHours: snapshot.actualHours,
+    actualTimeLoggedHours: snapshot.actualHours,
+    actualTimeLoggedMinutes: minutesFromHours(snapshot.actualHours),
+    targetHours: snapshot.targetHours,
+    taskCount: snapshot.taskCount || tasks.length,
+    completedTaskCount: snapshot.completedTaskCount || tasks.filter(task => task.completed).length,
+    taskOrderRange: snapshot.taskOrderRange,
+    vinRange: snapshot.vinRange,
+    vinRanges: snapshot.vinRange ? [snapshot.vinRange] : [],
+    supportWorkers: snapshot.supportWorkers,
+    tasks,
+    lastSyncedAt: snapshot.syncedAt
+  };
+}
+
+function workerNameFromTitle(title) {
+  const parts = String(title || "").split("|").map(part => part.trim());
+  return parts.at(-1) || "Worker";
+}
+
+function mergeUnique(existing, incoming) {
+  return Array.from(new Set([...(existing || []), ...(incoming || [])].filter(Boolean)));
+}
+
+function splitMultiValue(value) {
+  if (!value) return [];
+  return String(value).split(",").map(item => item.trim()).filter(Boolean);
+}
+
+function formatMergedValue(values) {
+  const unique = mergeUnique([], values);
+  if (!unique.length) return "";
+  if (unique.length <= 3) return unique.join(", ");
+  return `${unique.length} values`;
+}
+
+function mergeStatus(left, right) {
+  if (left === right) return left;
+  if (left === "Assigned" || right === "Assigned") return "Assigned";
+  if (left === "Alert" || right === "Alert") return "Alert";
+  return left || right || "";
+}
+
+function mergeTaskLists(existingTasks, nextTasks) {
+  const tasksById = new Map();
+
+  for (const task of [...(existingTasks || []), ...(nextTasks || [])]) {
+    const key = task.id || `${task.title}-${task.cycle}-${task.vin}-${task.order}`;
+    if (!tasksById.has(key)) tasksById.set(key, task);
+  }
+
+  return Array.from(tasksById.values());
+}
+
+function mergeWorkerSnapshot(workers, nextWorker) {
+  const existing = workers.find(worker => worker.id === nextWorker.id);
+  if (!existing) {
+    workers.push(nextWorker);
+    return workers;
+  }
+
+  existing.assignedHours += Number(nextWorker.assignedHours || 0);
+  existing.completedHours += Number(nextWorker.completedHours || 0);
+  existing.remainingHours += Number(nextWorker.remainingHours || 0);
+  existing.actualHours += Number(nextWorker.actualHours || 0);
+  existing.targetHours = Math.max(Number(existing.targetHours || 0), Number(nextWorker.targetHours || 0));
+  existing.completedTaskCount += Number(nextWorker.completedTaskCount || 0);
+  existing.tasks = mergeTaskLists(existing.tasks, nextWorker.tasks);
+  existing.taskCount = existing.tasks.length;
+  existing.phases = mergeUnique(existing.phases, splitMultiValue(nextWorker.phase));
+  existing.workBlocks = mergeUnique(existing.workBlocks, splitMultiValue(nextWorker.workBlock));
+  existing.vinRanges = mergeUnique(existing.vinRanges, splitMultiValue(nextWorker.vinRange));
+  existing.trackerUrls = mergeUnique(existing.trackerUrls, nextWorker.trackerUrl ? [nextWorker.trackerUrl] : []);
+  existing.phase = formatMergedValue(existing.phases);
+  existing.workBlock = formatMergedValue(existing.workBlocks);
+  existing.vinRange = formatMergedValue(existing.vinRanges);
+  existing.trackerStatus = mergeStatus(existing.trackerStatus, nextWorker.trackerStatus);
+  existing.trackerUrl = existing.trackerUrls[0] || existing.trackerUrl;
+  existing.lastSyncedAt = [existing.lastSyncedAt, nextWorker.lastSyncedAt].filter(Boolean).sort().at(-1) || null;
+
+  return workers;
+}
+
+function createEmptySnapshotWorker(row) {
+  const id = slugifyWorker({
+    workerEmail: row.worker_email,
+    workerName: row.worker_name
+  });
+
+  return {
+    id,
+    name: row.worker_name || row.worker_email || "Unassigned",
+    email: row.worker_email || "",
+    cycle: "",
+    phase: formatPhaseList(row.home_section_column || row.work_area_name),
+    phaseBucket: "",
+    phases: [],
+    workBlock: "",
+    workBlocks: [],
+    trackerStatus: "No Work",
+    trackerUrl: "",
+    trackerUrls: [],
+    assignedHours: 0,
+    completedHours: 0,
+    remainingHours: 0,
+    actualHours: 0,
+    actualTimeLoggedHours: 0,
+    actualTimeLoggedMinutes: 0,
+    targetHours: Number(row.hours_per_day || 7.5),
+    taskCount: 0,
+    completedTaskCount: 0,
+    taskOrderRange: "",
+    vinRange: "",
+    vinRanges: [],
+    supportWorkers: "",
+    tasks: [],
+    lastSyncedAt: null,
+    status: "No Work"
+  };
+}
+
+function ensureConfiguredSnapshotWorkers(workers, configuredRows) {
+  const merged = [...workers];
+  const workerIds = new Set(merged.map(worker => worker.id));
+
+  for (const row of configuredRows) {
+    const worker = createEmptySnapshotWorker(row);
+    if (!worker.id || worker.id === "worker-unknown" || workerIds.has(worker.id)) continue;
+    workerIds.add(worker.id);
+    merged.push(worker);
+  }
+
+  return merged.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function recalculateSnapshotWorkerCompletion(worker) {
+  const completedTasks = (worker.tasks || []).filter(task => task.completed);
+  worker.taskCount = (worker.tasks || []).length;
+  worker.completedTaskCount = completedTasks.length;
+  worker.completedHours = completedTasks.reduce((sum, task) => sum + Number(task.assignedHours || 0), 0);
+  worker.remainingHours = Math.max(0, Number(worker.assignedHours || 0) - worker.completedHours);
+  worker.actualTimeLoggedMinutes = (worker.tasks || []).reduce((sum, task) => sum + Number(task.actualTimeOnDateMinutes || 0), 0);
+  worker.actualTimeLoggedHours = round(worker.actualTimeLoggedMinutes / 60);
+  worker.actualHours = worker.actualTimeLoggedHours;
+  worker.status = worker.taskCount === 0 ? "No Work" : worker.remainingHours > 0 ? "Open" : "Complete";
+  worker.trackerStatus = worker.taskCount === 0 ? "No Work" : worker.remainingHours > 0 ? "Assigned" : "Complete";
+}
+
+async function enrichSnapshotWorkersFromRaw(workers) {
+  const taskIds = Array.from(new Set(
+    workers.flatMap(worker => (worker.tasks || []).map(task => String(task.id || ""))).filter(id => /^\d+$/.test(id))
+  ));
+  if (!taskIds.length) return;
+
+  const result = await pool.query(
+    `
+      select
+        gid,
+        name,
+        completed,
+        actual_time_minutes,
+        permalink_url,
+        custom_fields_json
+      from raw.asana_tasks
+      where gid = any($1::text[])
+    `,
+    [taskIds]
+  );
+  const byId = new Map(result.rows.map(row => [row.gid, row]));
+
+  for (const worker of workers) {
+    for (const task of worker.tasks || []) {
+      const row = byId.get(String(task.id || ""));
+      if (!row) continue;
+      const fields = fieldsByName(row.custom_fields_json);
+      const estimatedMinutes =
+        numberValue(fields["Estimated time"]) ||
+        numberValue(fields["Estimated Time (w/ Qty)"]) ||
+        numberValue(fields["Est Time Remaining (Project)"]);
+
+      task.title = row.name || task.title;
+      task.completed = Boolean(row.completed);
+      task.sourceUrl = publicLink(row.permalink_url) || task.sourceUrl;
+      task.actualTimeMinutes = Number(row.actual_time_minutes || 0);
+      task.actualTimeOnDateMinutes = Number(row.actual_time_minutes || 0);
+      task.sopUrl = publicLink(textValue(fields["SOP Link"]) || task.sopUrl);
+      task.estimatedMinutes = estimatedMinutes || task.estimatedMinutes || minutesFromHours(task.assignedHours);
+      task.targetHours = Number(task.targetHours || task.assignedHours || 0);
+      task.phase = formatPhaseName(task.phase);
+      task.cycle = formatCycleName(task.cycle);
+    }
+    worker.tasks = (worker.tasks || []).sort((a, b) => Number(a.completed) - Number(b.completed) || String(a.phase || "").localeCompare(String(b.phase || "")) || a.title.localeCompare(b.title));
+    recalculateSnapshotWorkerCompletion(worker);
+  }
+}
+
+function snapshotToLineOverview(snapshot) {
+  return {
+    cycle: snapshot.cycle,
+    status: snapshot.trackerStatus,
+    assignedHours: snapshot.assignedHours,
+    completedHours: snapshot.completedHours,
+    remainingHours: snapshot.remainingHours,
+    taskCount: snapshot.taskCount,
+    completedTaskCount: snapshot.completedTaskCount,
+    completionPercent: snapshot.completionPercent,
+    capacityHours: snapshot.capacityHours,
+    capacityDeltaHours: snapshot.capacityDeltaHours,
+    loadCapacityPercent: snapshot.loadCapacityPercent,
+    trackerUrl: snapshot.url
+  };
+}
+
+function buildCycleDaysFromTrackerSnapshots(activeSnapshots, selectedDate) {
+  const selectedSnapshots = activeSnapshots.filter(snapshot => snapshot.trackerDate === selectedDate);
+  const selectedCycle =
+    selectedSnapshots.find(snapshot => snapshot.trackerType === "Line Overview" && snapshot.cycle)?.cycle ||
+    selectedSnapshots.find(snapshot => snapshot.cycle)?.cycle ||
+    activeSnapshots
+      .filter(snapshot => snapshot.trackerDate && snapshot.cycle)
+      .sort((a, b) => String(b.trackerDate).localeCompare(String(a.trackerDate)))[0]?.cycle ||
+    "";
+
+  const cycleSnapshots = selectedCycle
+    ? activeSnapshots.filter(snapshot => snapshot.cycle === selectedCycle)
+    : activeSnapshots;
+  const byDate = new Map();
+
+  for (const snapshot of cycleSnapshots) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(snapshot.trackerDate || ""))) continue;
+    if (!byDate.has(snapshot.trackerDate)) {
+      byDate.set(snapshot.trackerDate, {
+        date: snapshot.trackerDate,
+        cycle: snapshot.cycle || selectedCycle,
+        workerCount: 0,
+        assignedHours: 0,
+        completedHours: 0,
+        remainingHours: 0,
+        taskCount: 0,
+        completedTaskCount: 0,
+        alertCount: 0,
+        noWorkCount: 0,
+        status: "",
+        completionPercent: null
+      });
+    }
+
+    const day = byDate.get(snapshot.trackerDate);
+    if (snapshot.trackerType === "Line Overview") {
+      day.status = snapshot.trackerStatus || day.status;
+      day.completionPercent = snapshot.completionPercent || day.completionPercent;
+      continue;
+    }
+
+    if (snapshot.trackerType !== "Worker") continue;
+    day.workerCount += 1;
+    day.assignedHours = round(day.assignedHours + Number(snapshot.assignedHours || 0));
+    day.completedHours = round(day.completedHours + Number(snapshot.completedHours || 0));
+    day.remainingHours = round(day.remainingHours + Number(snapshot.remainingHours || 0));
+    day.taskCount += Number(snapshot.taskCount || 0);
+    day.completedTaskCount += Number(snapshot.completedTaskCount || 0);
+    if (snapshot.trackerStatus === "Alert") day.alertCount += 1;
+    if (snapshot.trackerStatus === "No Work") day.noWorkCount += 1;
+  }
+
+  return {
+    cycle: selectedCycle,
+    selectedDate,
+    source: "dat-snapshots",
+    days: Array.from(byDate.values())
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((day, index) => ({
+        ...day,
+        dayNumber: index + 1,
+        label: `Day ${index + 1}`,
+        selected: day.date === selectedDate,
+        hasSnapshot: true,
+        completeTaskLabel: `${day.completedTaskCount}/${day.taskCount}`
+      }))
+  };
+}
+
 function buildCycleDaysFromRows(dayRows, selectedDate) {
   const selectedRow = dayRows.find(row => row.assigned_on === selectedDate) || {};
-  const selectedCycle = selectedRow.cycle_name || dayRows.find(row => row.cycle_name)?.cycle_name || "Current";
+  const selectedCycle = formatCycleName(selectedRow.cycle_name || dayRows.find(row => row.cycle_name)?.cycle_name) || "Current";
   const days = dayRows.map((row, index) => {
     const assignedHours = Number(row.assigned_hours || 0);
     const completedHours = Number(row.completed_hours || 0);
     const completionPercent = assignedHours ? round((completedHours / assignedHours) * 100, 1) : 0;
     return {
       date: row.assigned_on,
-      cycle: row.cycle_name || selectedCycle,
+      cycle: formatCycleName(row.cycle_name) || selectedCycle,
       label: `Day ${index + 1}`,
       selected: row.assigned_on === selectedDate,
       hasSnapshot: true,
@@ -389,7 +921,7 @@ async function latestImportRuns() {
       records_written,
       error_count
     from sync.run_log
-    where job_name in ('pull_airtable', 'pull_asana')
+    where job_name in ('pull_airtable', 'pull_asana', 'pull_daily_tracker')
     order by job_name, id desc
   `);
 
@@ -479,6 +1011,30 @@ async function cycleDays(date) {
   return buildCycleDaysFromRows(result.rows, date);
 }
 
+async function dailyTrackerSnapshots() {
+  const result = await pool.query(
+    `
+      select
+        gid,
+        name,
+        completed,
+        due_on::text,
+        permalink_url,
+        custom_fields_json,
+        raw_json,
+        synced_at::text
+      from raw.asana_tasks
+      where project_gid = $1
+      order by due_on desc nulls last, name
+    `,
+    [DAILY_TRACKER_PROJECT_ID]
+  );
+
+  return result.rows
+    .map(normalizeTrackerSnapshot)
+    .filter(snapshot => !snapshot.archivedSection);
+}
+
 async function dailyAssignmentsPayload(url) {
   const date = url.searchParams.get("date") || todayIso();
   const employee = url.searchParams.get("employee") || "";
@@ -488,31 +1044,54 @@ async function dailyAssignmentsPayload(url) {
     throw error;
   }
 
-  const [rows, configuredRows, latestRuns, latestDate, cycleDayPayload] = await Promise.all([
+  const [rows, configuredRows, latestRuns, latestDate, trackerSnapshots] = await Promise.all([
     workerAssignments(date),
     configuredWorkers(),
     latestImportRuns(),
     latestAssignmentDate(),
-    employee ? Promise.resolve(null) : cycleDays(date)
+    dailyTrackerSnapshots()
   ]);
-  const allWorkers = mergeConfiguredWorkers(buildWorkers(rows), configuredRows);
+  const selectedTrackerSnapshots = trackerSnapshots.filter(snapshot => snapshot.trackerDate === date);
+  const hasTrackerSnapshot = selectedTrackerSnapshots.some(snapshot => snapshot.trackerType === "Worker" || snapshot.trackerType === "Line Overview");
+  const latestTrackerSnapshotDate = latestActiveTrackerDate(trackerSnapshots);
+
+  let allWorkers;
+  let lineOverview;
+  let cycleDayPayload;
+
+  if (hasTrackerSnapshot) {
+    allWorkers = ensureConfiguredSnapshotWorkers(
+      selectedTrackerSnapshots
+        .filter(snapshot => snapshot.trackerType === "Worker")
+        .map(snapshotToWorker)
+        .reduce(mergeWorkerSnapshot, []),
+      configuredRows
+    );
+    await enrichSnapshotWorkersFromRaw(allWorkers);
+    cycleDayPayload = employee ? null : buildCycleDaysFromTrackerSnapshots(trackerSnapshots, date);
+    lineOverview = selectedTrackerSnapshots.find(snapshot => snapshot.trackerType === "Line Overview");
+  } else {
+    allWorkers = mergeConfiguredWorkers(buildWorkers(rows), configuredRows);
+    cycleDayPayload = employee ? null : await cycleDays(date);
+  }
+
   const workers = allWorkers.filter(worker => !employee || worker.id === employee);
 
   return {
     ok: true,
     source: "asana",
-    mode: "hawley-read-only-pilot",
+    mode: hasTrackerSnapshot ? "hawley-dat-snapshot-pilot" : "hawley-read-only-pilot",
     date,
     employee: employee || null,
     project: {
-      id: "1214157321063250",
+      id: DAILY_TRACKER_PROJECT_ID,
       name: "Daily Assignment Tracker",
-      url: "https://app.asana.com/1/829365006370166/project/1214157321063250"
+      url: `https://app.asana.com/1/829365006370166/project/${DAILY_TRACKER_PROJECT_ID}`
     },
-    lineOverview: employee ? null : buildLineOverview(workers, date, latestRuns),
+    lineOverview: employee ? null : lineOverview ? snapshotToLineOverview(lineOverview) : buildLineOverview(workers, date, latestRuns),
     managerSignals: employee ? null : buildManagerSignals(workers),
     cycleDays: cycleDayPayload,
-    latestTrackerDate: latestDate,
+    latestTrackerDate: latestTrackerSnapshotDate || latestDate,
     workers,
     latestRuns,
     refreshedAt: new Date().toISOString()
@@ -526,13 +1105,14 @@ async function healthPayload() {
       select
         (select count(*)::int from reporting.hawley_worker_page_assignments) as assignment_rows,
         (select count(distinct worker_email)::int from reporting.hawley_worker_page_assignments where worker_email is not null) as assigned_worker_count,
+        (select count(*)::int from raw.asana_tasks where project_gid = $1) as daily_tracker_rows,
         (
           select count(*)::int
           from raw.airtable_work_force
           where lower(coalesce(fields_json->>'Actively Employed', 'false')) in ('true', '1', 'yes')
             and nullif(coalesce(fields_json->>'Assignee', fields_json->>'Name', ''), '') is not null
         ) as worker_count
-    `),
+    `, [DAILY_TRACKER_PROJECT_ID]),
     latestImportRuns()
   ]);
 

@@ -1,20 +1,14 @@
 create or replace view reporting.work_force_capability_levels as
 with workforce as (
   select
-    wf.record_id as workforce_record_id,
-    nullif(wf.fields_json->>'Name', '') as worker_name,
-    nullif(wf.fields_json->>'Assignee', '') as worker_email,
-    case
-      when lower(coalesce(wf.fields_json->>'Actively Employed', 'false')) in ('true', '1', 'yes') then true
-      else false
-    end as actively_employed,
-    case
-      when nullif(regexp_replace(coalesce(wf.fields_json->>'Hours Per Day', ''), '[^0-9.\-]+', '', 'g'), '') is null then null
-      else nullif(regexp_replace(coalesce(wf.fields_json->>'Hours Per Day', ''), '[^0-9.\-]+', '', 'g'), '')::numeric
-    end as hours_per_day,
-    ops.jsonb_display_text(wf.fields_json->'Home Section/Column') as home_section_column,
+    wf.workforce_record_id,
+    wf.worker_name,
+    wf.worker_email,
+    wf.actively_employed,
+    wf.hours_per_day::numeric as hours_per_day,
+    wf.home_section_column,
     wf.fields_json
-  from raw.airtable_work_force wf
+  from hb.work_force wf
 ),
 declared as (
   select
@@ -60,7 +54,7 @@ from declared;
 
 create or replace view reporting.task_work_area_inference as
 select
-  ti.id as task_instance_id,
+  ti.rev1_task_instance_id as task_instance_id,
   ti.airtable_record_id,
   ti.asana_task_gid,
   ti.task_name,
@@ -68,21 +62,21 @@ select
   ti.worker_email,
   ti.assigned_on,
   ti.task_status,
-  ti.phase_name,
-  ti.cycle_name,
-  ti.vin,
-  ti.estimated_hours,
+  coalesce(ti.phase_label, ti.section_column) as phase_name,
+  ti.cycle_label as cycle_name,
+  coalesce(ti.vin_text, ti.vin::text) as vin,
+  round((coalesce(ti.estimated_task_time_seconds, 0) / 3600.0)::numeric, 2)::numeric(10, 2) as estimated_hours,
   ti.actual_time_minutes,
-  coalesce(matched_area.work_area_key, regexp_replace(lower(coalesce(nullif(ti.phase_name, ''), membership.section_name, 'unspecified')), '[^a-z0-9]+', '_', 'g')) as inferred_work_area_key,
-  coalesce(matched_area.display_name, nullif(ti.phase_name, ''), membership.section_name, 'Unspecified') as inferred_work_area_name,
+  coalesce(matched_area.work_area_key, regexp_replace(lower(coalesce(nullif(coalesce(ti.phase_label, ti.section_column), ''), membership.section_name, 'unspecified')), '[^a-z0-9]+', '_', 'g')) as inferred_work_area_key,
+  coalesce(matched_area.display_name, nullif(coalesce(ti.phase_label, ti.section_column), ''), membership.section_name, 'Unspecified') as inferred_work_area_name,
   case
-    when matched_area.work_area_key is not null and nullif(ti.phase_name, '') is not null then 'airtable_phase_alias'
-    when nullif(ti.phase_name, '') is not null then 'airtable_phase'
+    when matched_area.work_area_key is not null and nullif(coalesce(ti.phase_label, ti.section_column), '') is not null then 'hb_phase_alias'
+    when nullif(coalesce(ti.phase_label, ti.section_column), '') is not null then 'hb_phase'
     when membership.section_name is not null then 'asana_section'
     else 'unknown'
   end as inference_source,
   ti.normalized_at
-from core.task_instances ti
+from hb.rev1_task_instances ti
 left join lateral (
   select
     m.section_name
@@ -96,11 +90,11 @@ left join lateral (
   from ops.work_area_aliases wa
   where wa.active
     and (
-      lower(coalesce(ti.phase_name, '')) = lower(wa.display_name)
+      lower(coalesce(ti.phase_label, ti.section_column, '')) = lower(wa.display_name)
       or exists (
         select 1
         from unnest(wa.phase_names || wa.section_names) as alias_name
-        where lower(coalesce(ti.phase_name, membership.section_name, '')) = lower(alias_name)
+        where lower(coalesce(ti.phase_label, ti.section_column, membership.section_name, '')) = lower(alias_name)
       )
       or exists (
         select 1
@@ -109,7 +103,7 @@ left join lateral (
       )
     )
   order by
-    case when lower(coalesce(ti.phase_name, '')) = lower(wa.display_name) then 0 else 1 end,
+    case when lower(coalesce(ti.phase_label, ti.section_column, '')) = lower(wa.display_name) then 0 else 1 end,
     array_length(wa.phase_names || wa.section_names, 1) nulls last,
     wa.display_name
   limit 1
@@ -154,22 +148,22 @@ select
   hints.confidence_label,
   hints.source_label,
   hints.notes,
-  wf.record_id as matched_workforce_record_id,
-  coalesce(wf.fields_json->>'Name', hints.owner_person_name) as matched_worker_name,
-  coalesce(wf.fields_json->>'Assignee', hints.owner_person_email) as matched_worker_email,
+  wf.workforce_record_id as matched_workforce_record_id,
+  coalesce(wf.worker_name, hints.owner_person_name) as matched_worker_name,
+  coalesce(wf.worker_email, hints.owner_person_email) as matched_worker_email,
   hints.active,
   hints.updated_at
 from ops.manual_work_area_owner_hints hints
 join ops.work_area_aliases wa on wa.work_area_key = hints.work_area_key
-left join raw.airtable_work_force wf
+left join hb.work_force wf
   on (
     hints.owner_person_email is not null
-    and lower(wf.fields_json->>'Assignee') = lower(hints.owner_person_email)
+    and lower(wf.worker_email) = lower(hints.owner_person_email)
   )
   or (
     hints.owner_person_email is null
     and hints.owner_person_name is not null
-    and lower(wf.fields_json->>'Name') like '%' || lower(hints.owner_person_name) || '%'
+    and lower(wf.worker_name) like '%' || lower(hints.owner_person_name) || '%'
   )
 where hints.active;
 
@@ -271,7 +265,7 @@ observed_ranked as (
     'observed_assignment_history' as signal_type,
     task_count::numeric as signal_score,
     observed_confidence as confidence,
-    'core.task_instances' as source,
+    'hb.rev1_task_instances' as source,
     row_number() over (
       partition by work_area_key
       order by task_count desc, completed_task_count desc, worker_name

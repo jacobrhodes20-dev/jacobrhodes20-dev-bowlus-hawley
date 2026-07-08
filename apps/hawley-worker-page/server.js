@@ -14,6 +14,7 @@ const staticDir = path.join(appDir, "public");
 const HOST = process.env.HAWLEY_WORKER_HOST || "127.0.0.1";
 const PORT = Number(process.env.HAWLEY_WORKER_PORT || 5273);
 const DAILY_TRACKER_PROJECT_ID = process.env.HAWLEY_DAILY_TRACKER_PROJECT_GID || "1214157321063250";
+const USE_DAT_SNAPSHOTS = process.env.HAWLEY_WORKER_USE_DAT_SNAPSHOTS === "true";
 
 const pool = new Pool(getDatabaseConfig());
 
@@ -1178,18 +1179,15 @@ async function workerAssignments(date) {
 async function configuredWorkers() {
   const result = await pool.query(`
     select
-      nullif(fields_json->>'Name', '') as worker_name,
-      nullif(fields_json->>'Assignee', '') as worker_email,
-      case
-        when nullif(regexp_replace(coalesce(fields_json->>'Hours Per Day', ''), '[^0-9.\\-]+', '', 'g'), '') is null then null
-        else nullif(regexp_replace(coalesce(fields_json->>'Hours Per Day', ''), '[^0-9.\\-]+', '', 'g'), '')::numeric
-      end as hours_per_day,
-      ops.jsonb_display_text(fields_json->'Home Section/Column') as home_section_column,
+      worker_name,
+      worker_email,
+      hours_per_day,
+      home_section_column,
       null::text as work_area_name
-    from raw.airtable_work_force
-    where lower(coalesce(fields_json->>'Actively Employed', 'false')) in ('true', '1', 'yes')
-      and nullif(coalesce(fields_json->>'Assignee', fields_json->>'Name', ''), '') is not null
-    order by fields_json->>'Name' nulls last, fields_json->>'Assignee' nulls last
+    from hb.work_force
+    where actively_employed
+      and nullif(coalesce(worker_email, worker_name, ''), '') is not null
+    order by worker_name nulls last, worker_email nulls last
   `);
 
   return result.rows;
@@ -1310,13 +1308,35 @@ async function workerDailyActualRows(date) {
   const result = await pool.query(
     `
       select
-        record_id,
-        fields_json
-      from raw.airtable_worker_daily_actuals
-      where fields_json->>'Work Date' = $1
+        worker_daily_actual_id::text as record_id,
+        jsonb_build_object(
+          'Work Date', work_date::text,
+          'Worker Key', worker_key,
+          'Worker Name', worker_name,
+          'Worker Email', worker_email,
+          'Asana Task GID', asana_task_gid,
+          'Task Name', task_name,
+          'Task URL', task_url,
+          'VIN', vin,
+          'Cycle', cycle_label,
+          'Phase', phase_label,
+          'Assigned Hours', assigned_hours,
+          'Allocated Hours', allocated_hours,
+          'Actual Minutes', actual_minutes,
+          'Timer Minutes', timer_minutes,
+          'Asana Posted Minutes', asana_posted_minutes,
+          'Source', source_label,
+          'Completed?', completed,
+          'Daily Summary?', daily_summary,
+          'Daily Available Minutes', daily_available_minutes,
+          'Daily Logged Minutes', daily_logged_minutes,
+          'Daily Efficiency Percent', daily_efficiency_percent
+        ) as fields_json
+      from hb.worker_daily_task_actuals
+      where work_date = $1::date
       order by
-        fields_json->>'Worker Name' nulls last,
-        fields_json->>'Task Name' nulls last
+        worker_name nulls last,
+        task_name nulls last
     `,
     [date]
   );
@@ -1343,13 +1363,14 @@ async function dailyAssignmentsPayload(url) {
   ]);
   const selectedTrackerSnapshots = trackerSnapshots.filter(snapshot => snapshot.trackerDate === date);
   const hasTrackerSnapshot = selectedTrackerSnapshots.some(snapshot => snapshot.trackerType === "Worker" || snapshot.trackerType === "Line Overview");
+  const useTrackerSnapshot = hasTrackerSnapshot && (USE_DAT_SNAPSHOTS || rows.length === 0);
   const latestTrackerSnapshotDate = latestActiveTrackerDate(trackerSnapshots);
 
   let allWorkers;
   let lineOverview;
   let cycleDayPayload;
 
-  if (hasTrackerSnapshot) {
+  if (useTrackerSnapshot) {
     allWorkers = ensureConfiguredSnapshotWorkers(
       selectedTrackerSnapshots
         .filter(snapshot => snapshot.trackerType === "Worker")
@@ -1374,8 +1395,8 @@ async function dailyAssignmentsPayload(url) {
 
   return {
     ok: true,
-    source: "asana",
-    mode: hasTrackerSnapshot ? "hawley-dat-snapshot-pilot" : "hawley-read-only-pilot",
+    source: "hawley-brain",
+    mode: useTrackerSnapshot ? "hawley-dat-snapshot-fallback" : "hawley-read-model",
     date,
     employee: employee || null,
     project: {
@@ -1386,7 +1407,7 @@ async function dailyAssignmentsPayload(url) {
     lineOverview: employee ? null : lineOverview ? snapshotToLineOverview(lineOverview) : buildLineOverview(workers, date, latestRuns),
     managerSignals: employee ? null : buildManagerSignals(workers),
     cycleDays: cycleDayPayload,
-    latestTrackerDate: latestTrackerSnapshotDate || latestDate,
+    latestTrackerDate: useTrackerSnapshot ? latestTrackerSnapshotDate || latestDate : latestDate,
     workers,
     latestRuns,
     refreshedAt: new Date().toISOString()
@@ -1401,12 +1422,12 @@ async function healthPayload() {
         (select count(*)::int from reporting.hawley_worker_page_assignments) as assignment_rows,
         (select count(distinct worker_email)::int from reporting.hawley_worker_page_assignments where worker_email is not null) as assigned_worker_count,
         (select count(*)::int from raw.asana_tasks where project_gid = $1) as daily_tracker_rows,
-        (select count(*)::int from raw.airtable_worker_daily_actuals) as worker_daily_actual_rows,
+        (select count(*)::int from hb.worker_daily_task_actuals) as worker_daily_actual_rows,
         (
           select count(*)::int
-          from raw.airtable_work_force
-          where lower(coalesce(fields_json->>'Actively Employed', 'false')) in ('true', '1', 'yes')
-            and nullif(coalesce(fields_json->>'Assignee', fields_json->>'Name', ''), '') is not null
+          from hb.work_force
+          where actively_employed
+            and nullif(coalesce(worker_email, worker_name, ''), '') is not null
         ) as worker_count
     `, [DAILY_TRACKER_PROJECT_ID]),
     latestImportRuns()

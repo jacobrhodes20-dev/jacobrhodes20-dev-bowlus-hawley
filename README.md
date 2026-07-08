@@ -11,7 +11,7 @@ between Asana, Airtable, the Daily Worker App, dashboards, and Codex/agent tools
 ## System Boundaries
 
 - Asana remains the human task execution source of truth.
-- Airtable remains the human-editable planning and control surface.
+- Airtable remains the legacy/human-readable planning mirror during migration.
 - Postgres becomes the fast local mirror, calculation layer, historical memory,
   and app-readable reporting model.
 - Hawley reads source systems first, calculates locally, and only pushes selected
@@ -52,6 +52,7 @@ npm install
 npm run pg:health
 npm run pg:migrate
 npm run pg:pull:asana
+npm run pg:refresh-worker-read-model
 ```
 
 `pg:health` only checks the database connection. It does not contact Asana or
@@ -62,13 +63,25 @@ from Asana and mirrors portfolios, portfolio-project membership, projects,
 tasks, subtasks, custom fields, and task project/section memberships into the
 local Postgres `raw` schema.
 
+`pg:refresh-worker-read-model` is the fast worker-page path. It pulls Asana,
+rebuilds HB tables, then pulls Daily Assignment Tracker snapshots read-only for
+comparison/fallback. It does not pull or write Airtable.
+
 Hawley's operational capability map lives in the `ops` schema and reporting
 views. It combines Airtable `Work Force` skill levels, observed Rev1/Asana task
 assignment history, and local-only owner hints for scheduling/routing support.
 See `docs/runbooks/operational-capability-map.md`.
 
+The Rev1 Airtable field and calculation migration audit is documented in
+`docs/runbooks/rev1-airtable-calculation-audit.md`.
+
+The Hawley Brain Rev1 build path and HB-owned tables are documented in
+`docs/runbooks/hawley-brain-rev1-build.md`.
+
 The Hawley worker-page pilot runs beside the current Daily Worker App and reads
-Postgres only:
+Postgres only. By default it uses the HB read model; set
+`HAWLEY_WORKER_USE_DAT_SNAPSHOTS=true` only when intentionally comparing against
+the legacy Daily Assignment Tracker snapshot shape:
 
 ```powershell
 npm run worker:hawley

@@ -259,9 +259,9 @@
   render();
   loadAuthStatus();
   loadAssignments();
+  loadAlertStatus();
   if (!queryEmployee) {
     loadRefreshStatus();
-    loadAlertStatus();
   }
   window.setInterval(() => {
     if (hasVisibleRunningTimer()) render();
@@ -823,33 +823,21 @@
   }
 
   function workerDailyEfficiency(worker, availableMinutes = elapsedScheduledWorkMinutesForDate(state.date)) {
+    const scheduledAvailableMinutes = Math.max(0, Number(availableMinutes || 0));
     const loggedMinutes = workerActualLoggedMinutes(worker);
     const summary = worker.dailyEfficiency || {};
     const summaryLoggedMinutes = Number(summary.loggedMinutes || 0);
-    const summaryAvailableMinutes = Number(summary.availableMinutes || 0);
-    if (summaryLoggedMinutes > 0 && summaryAvailableMinutes > 0) {
-      const summaryPercent = Number(summary.percent || 0) || Math.round((summaryLoggedMinutes / summaryAvailableMinutes) * 100);
-      return {
-        id: worker.id,
-        name: worker.name,
-        loggedMinutes: Math.max(loggedMinutes, summaryLoggedMinutes),
-        availableMinutes: summaryAvailableMinutes,
-        hasWork: true,
-        percent: summaryPercent,
-        level: efficiencyLevel(summaryPercent, summaryAvailableMinutes),
-      };
-    }
-
+    const effectiveLoggedMinutes = Math.max(loggedMinutes, summaryLoggedMinutes);
     const hasWork = Number(worker.assignedHours || 0) > 0 || openTasks(worker.tasks).length || Number(worker.completedTaskCount || 0) > 0;
-    const percent = availableMinutes ? Math.round((loggedMinutes / availableMinutes) * 100) : 0;
+    const percent = scheduledAvailableMinutes ? Math.round((effectiveLoggedMinutes / scheduledAvailableMinutes) * 100) : 0;
     return {
       id: worker.id,
       name: worker.name,
-      loggedMinutes,
-      availableMinutes,
+      loggedMinutes: effectiveLoggedMinutes,
+      availableMinutes: scheduledAvailableMinutes,
       hasWork,
       percent,
-      level: efficiencyLevel(percent, availableMinutes),
+      level: efficiencyLevel(percent, scheduledAvailableMinutes),
     };
   }
 

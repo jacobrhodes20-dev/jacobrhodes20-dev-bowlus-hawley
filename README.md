@@ -20,19 +20,23 @@ between Asana, Airtable, the Daily Worker App, dashboards, and Codex/agent tools
 Phase 1 is mirror/read-model only. It does not perform live Asana or Airtable
 writes.
 
-## Target Host
+## Production Hosting
 
-The intended production host is `SW_Machine`.
+The active Hawley Admin application is hosted by DigitalOcean App Platform:
 
-Recommended first deployment:
+- Production URL: `https://bowlus-hawley-9s6iw.ondigitalocean.app/admin`
+- Verified: 2026-07-13
+- Verified model label: `hawley-true-phase-pacing-v1`
+- HTTP behavior: HTTPS `200`, `Cache-Control: no-cache`, and DigitalOcean App
+  Platform origin headers
 
-- Native PostgreSQL Windows service on `SW_Machine`
-- Node.js sync scripts from this repo
-- scheduled dry-run/import jobs only after Postgres health checks pass
-- regular `pg_dump` backups
+The DigitalOcean droplet named `bowlus-tools` is a separate server and is not
+the verified Hawley Admin web origin. `SW_Machine` was the original pilot host;
+the scripts and runbook that reference it are retained only as historical/local
+pilot tooling and must not be treated as the production deployment path.
 
-Docker may be useful later for development, but the shop host should start with
-native Postgres for simpler service startup and backups.
+See `docs/runbooks/digitalocean-app-hosting.md` for the verified application
+behavior, refresh semantics, and deployment boundaries.
 
 ## Repo Layout
 
@@ -105,3 +109,4 @@ Do not commit:
 - backups
 
 Use `.env.example` for variable names only.
+
